@@ -1,0 +1,212 @@
+"""
+Ring Agent — LiveKit voice agent (Sarah the restaurant receptionist)
+Architecture: Two agents with handoff per LiveKit SKILL.md guidance.
+  GreeterAgent  → handles FAQ/general chat (lean context)
+  ReservationAgent → handles booking flow STEP A-D (focused context)
+"""
+import logging
+import os
+import httpx
+from dotenv import load_dotenv
+
+from livekit.agents import (
+    Agent,
+    AgentServer,
+    AgentSession,
+    JobContext,
+    RunContext,
+    TurnHandlingOptions,
+    cli,
+    inference,
+    room_io,
+)
+from livekit.agents.beta import EndCallTool
+from livekit.agents.llm import function_tool
+
+from prompt import build_greeter_prompt, build_reservation_prompt
+
+load_dotenv()
+logger = logging.getLogger("ring-agent")
+
+RINGAGENT_API_URL = os.environ.get("RINGAGENT_API_URL", "")
+DEMO_RESTAURANT_ID = os.environ.get("DEMO_RESTAURANT_ID", "86982824-7063-4235-ad95-329e2877f483")
+
+
+# ---------------------------------------------------------------------------
+# Reservation Agent — activated on handoff from GreeterAgent
+# ---------------------------------------------------------------------------
+
+class ReservationAgent(Agent):
+    def __init__(self, restaurant: dict, caller_phone: str) -> None:
+        self.restaurant = restaurant
+        self.caller_phone = caller_phone
+        super().__init__(
+            instructions=build_reservation_prompt(restaurant, caller_phone),
+            tools=[EndCallTool()],
+        )
+
+    async def on_enter(self) -> None:
+        # Session context already has conversation history — just continue naturally
+        self.session.generate_reply(
+            instructions="You've just taken over to handle the reservation. "
+                         "Continue naturally from where the conversation left off. "
+                         "Do not re-introduce yourself. Start STEP A immediately."
+        )
+
+    @function_tool
+    async def save_reservation(
+        self,
+        context: RunContext,
+        customer_name: str,
+        party_size: str,
+        date: str,
+        time: str,
+        notes: str = "",
+    ) -> str:
+        """Call ONLY after the caller has explicitly said yes to the full readback of all four details.
+        Say ZERO words before calling this. After it returns, say ZERO words — confirmation is already delivered.
+
+        Args:
+            customer_name: The caller's name for the reservation
+            party_size: Number of people e.g. '4 people'
+            date: Full date e.g. 'Friday June 27'
+            time: Reservation time e.g. '7:00 PM'
+            notes: Special occasion or requests e.g. 'Birthday, wants a cake'. Empty string if none.
+        """
+        logger.info("Saving reservation: %s, %s, %s, %s", customer_name, party_size, date, time)
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{RINGAGENT_API_URL}/agent/save-reservation",
+                    json={
+                        "restaurant_id": self.restaurant.get("id"),
+                        "caller_phone": self.caller_phone,
+                        "customer_name": customer_name,
+                        "party_size": party_size,
+                        "date": date,
+                        "time": time,
+                        "notes": notes,
+                    },
+                    timeout=10.0,
+                )
+        except Exception as e:
+            logger.error("Failed to save reservation: %s", e)
+        return (
+            "Reservation saved. The caller has already heard the confirmation message "
+            "and been asked if they need anything else. Say nothing."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Greeter Agent — first agent, handles FAQ and triggers handoff to booking
+# ---------------------------------------------------------------------------
+
+class GreeterAgent(Agent):
+    def __init__(self, restaurant: dict, caller_phone: str) -> None:
+        self.restaurant = restaurant
+        self.caller_phone = caller_phone
+        restaurant_name = restaurant.get("name", "the restaurant")
+        super().__init__(
+            instructions=build_greeter_prompt(restaurant),
+            tools=[EndCallTool()],
+        )
+        self._restaurant_name = restaurant_name
+
+    async def on_enter(self) -> None:
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            from backports.zoneinfo import ZoneInfo
+        timezone = self.restaurant.get("timezone", "America/New_York")
+        try:
+            now = datetime.now(ZoneInfo(timezone))
+            hour = now.hour
+        except Exception:
+            hour = datetime.now().hour
+        time_of_day = "morning" if hour < 12 else "afternoon" if hour < 17 else "evening"
+
+        self.session.generate_reply(
+            instructions=f"Say exactly this greeting: "
+                         f"'Good {time_of_day}, thank you for calling {self._restaurant_name}. "
+                         f"This is Sarah, how can I help you today?' — say nothing else."
+        )
+
+    @function_tool
+    async def start_reservation(self, context: RunContext) -> "ReservationAgent":
+        """Call this the moment the caller asks to make a reservation.
+        Transfers the session to the reservation booking flow.
+        """
+        logger.info("Handing off to ReservationAgent")
+        # Pass chat_ctx so ReservationAgent has full conversation history
+        return ReservationAgent(self.restaurant, self.caller_phone)
+
+
+# ---------------------------------------------------------------------------
+# Server entrypoint
+# ---------------------------------------------------------------------------
+
+async def _fetch_restaurant(called_number: str | None) -> dict:
+    """Fetch restaurant by called phone number, fall back to demo."""
+    async with httpx.AsyncClient() as client:
+        if called_number:
+            try:
+                r = await client.get(
+                    f"{RINGAGENT_API_URL}/agent/restaurant-by-phone/{called_number}",
+                    timeout=5.0,
+                )
+                if r.status_code == 200:
+                    return r.json()
+            except Exception:
+                pass
+        # Fallback to demo restaurant
+        r = await client.get(
+            f"{RINGAGENT_API_URL}/agent/restaurant/{DEMO_RESTAURANT_ID}",
+            timeout=5.0,
+        )
+        return r.json()
+
+
+server = AgentServer()
+
+
+@server.rtc_session(agent_name="ring-agent")
+async def entrypoint(ctx: JobContext) -> None:
+    ctx.log_context_fields = {"room": ctx.room.name}
+    await ctx.connect()
+
+    # Read SIP participant attributes to get caller + called numbers
+    # Attribute names per docs.livekit.io/reference/telephony/sip-participant/
+    caller_phone = "unknown"
+    called_number = None
+    for participant in ctx.room.remote_participants.values():
+        attrs = participant.attributes or {}
+        if attrs.get("sip.phoneNumber"):
+            caller_phone = attrs["sip.phoneNumber"]
+        if attrs.get("sip.trunkPhoneNumber"):
+            called_number = attrs["sip.trunkPhoneNumber"]
+    logger.info("Call from %s to %s", caller_phone, called_number)
+
+    restaurant = await _fetch_restaurant(called_number)
+
+    session = AgentSession(
+        stt=inference.STT("deepgram/nova-2-phonecall", language="en"),
+        llm=inference.LLM("openai/gpt-4o", extra_kwargs={"temperature": 0.65}),
+        tts=inference.TTS("cartesia/sonic-2", voice="b7d50908-b17c-442d-ad8d-810c63997ed9"),
+        turn_handling=TurnHandlingOptions(
+            interruption={
+                "resume_false_interruption": True,
+                "false_interruption_timeout": 1.5,
+            },
+            preemptive_generation={"enabled": True, "max_retries": 3},
+        ),
+    )
+
+    await session.start(
+        agent=GreeterAgent(restaurant, caller_phone),
+        room=ctx.room,
+    )
+
+
+if __name__ == "__main__":
+    cli.run_app(server)
