@@ -187,6 +187,9 @@ async def entrypoint(ctx: JobContext) -> None:
         tts=inference.TTS("elevenlabs/eleven_turbo_v2_5", voice="XrExE9yKIg1WjnnlVkGX"),
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(),
+            endpointing={
+                "min_delay": 0.4,
+            },
             interruption={
                 "mode": "adaptive",
                 "min_duration": 0.5,
@@ -195,6 +198,7 @@ async def entrypoint(ctx: JobContext) -> None:
             },
             preemptive_generation={
                 "enabled": True,
+                "preemptive_tts": True,
             },
         ),
     )
