@@ -23,12 +23,12 @@ class DeepgramSTT(stt.STT):
         self.sample_rate = 16000
         self.num_channels = 1
 
-    async def recognize(self, audio: bytes) -> str:
+    async def _recognize_impl(self, audio: bytes, language: str = "en") -> str:
         """Transcribe audio using Deepgram REST API"""
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    "https://api.deepgram.com/v1/listen?model=nova-2-phonecall&language=en",
+                    f"https://api.deepgram.com/v1/listen?model=nova-2-phonecall&language={language}",
                     headers={"Authorization": f"Token {self.api_key}"},
                     content=audio,
                 )
