@@ -6,36 +6,35 @@ from typing import AsyncGenerator
 from livekit.agents import inference, llm, tts, stt
 from livekit.agents.llm import ChatMessage, ChatContext
 from openai import AsyncOpenAI
-from deepgram import DeepgramClient, PrerecordedOptions
+import httpx
 import piper
 import wave
 
 logger = logging.getLogger("custom-inference")
 
 # ============================================================================
-# Custom STT using Deepgram directly
+# Custom STT using Deepgram directly (REST API)
 # ============================================================================
 
 class DeepgramSTT(stt.STT):
     def __init__(self, api_key: str = None, language: str = "en"):
         self.api_key = api_key or os.getenv("DEEPGRAM_API_KEY")
         self.language = language
-        self.client = DeepgramClient(api_key=self.api_key)
         self.sample_rate = 16000
         self.num_channels = 1
 
     async def recognize(self, audio: bytes) -> str:
-        """Transcribe audio using Deepgram"""
+        """Transcribe audio using Deepgram REST API"""
         try:
-            options = PrerecordedOptions(
-                model="nova-2-phonecall",
-                language=self.language,
-            )
-            response = self.client.listen.prerecorded.v("1").transcribe_file(
-                {"buffer": audio},
-                options,
-            )
-            return response.results.channels[0].alternatives[0].transcript
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.deepgram.com/v1/listen?model=nova-2-phonecall&language=en",
+                    headers={"Authorization": f"Token {self.api_key}"},
+                    content=audio,
+                )
+                result = response.json()
+                transcript = result["results"]["channels"][0]["alternatives"][0]["transcript"]
+                return transcript
         except Exception as e:
             logger.error(f"Deepgram transcription failed: {e}")
             return ""
