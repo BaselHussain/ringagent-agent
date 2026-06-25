@@ -187,9 +187,10 @@ async def entrypoint(ctx: JobContext) -> None:
         turn_handling=TurnHandlingOptions(
             interruption={
                 "resume_false_interruption": True,
-                "false_interruption_timeout": 1.2,
+                "false_interruption_timeout": 2.5,
+                "min_duration": 0.5,
             },
-            preemptive_generation={"enabled": True, "max_retries": 3},
+            preemptive_generation={"enabled": True, "max_retries": 5},
             adaptive=True,
         ),
     )
@@ -197,6 +198,7 @@ async def entrypoint(ctx: JobContext) -> None:
     await session.start(
         agent=SarahAgent(restaurant, caller_phone),
         room=ctx.room,
+        room_opts={"auto_subscribe": True, "close_on_disconnect": False},
     )
 
 
