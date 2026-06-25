@@ -199,6 +199,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 "false_interruption_timeout": 1.2,
             },
             preemptive_generation={"enabled": True, "max_retries": 3},
+            adaptive=True,
         ),
     )
 
