@@ -190,13 +190,14 @@ async def entrypoint(ctx: JobContext) -> None:
     restaurant = await _fetch_restaurant(called_number)
 
     session = AgentSession(
-        stt=inference.STT("deepgram/nova-2-phonecall", language="en"),
+        stt=inference.STT("deepgram/nova-3-phonecall", language="en"),
         llm=inference.LLM("openai/gpt-4o", extra_kwargs={"temperature": 0.5}),
-        tts=inference.TTS("elevenlabs/eleven_turbo_v2_5", voice="XrExE9yKIg1WjnnlVkGX"),
+        tts=inference.TTS("cartesia/sonic-turbo", voice="8d6ac86b-988f-4ee4-8ec6-b7b738dee19a"),
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(),
             endpointing={
-                "min_delay": 0.4,
+                "min_delay": 0.2,
+                "max_delay": 0.8,
             },
             interruption={
                 "mode": "adaptive",
