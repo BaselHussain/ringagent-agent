@@ -199,7 +199,6 @@ async def entrypoint(ctx: JobContext) -> None:
             },
             preemptive_generation={
                 "enabled": True,
-                "preemptive_tts": True,
             },
         ),
     )
