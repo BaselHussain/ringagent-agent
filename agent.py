@@ -28,6 +28,7 @@ from prompt import build_greeter_prompt, build_reservation_prompt
 
 load_dotenv()
 logger = logging.getLogger("ring-agent")
+logging.basicConfig(level=logging.DEBUG)
 
 RINGAGENT_API_URL = os.environ.get("RINGAGENT_API_URL", "")
 DEMO_RESTAURANT_ID = os.environ.get("DEMO_RESTAURANT_ID", "86982824-7063-4235-ad95-329e2877f483")
