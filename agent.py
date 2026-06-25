@@ -25,6 +25,7 @@ from livekit.agents.llm import function_tool
 from livekit.plugins import noise_cancellation
 
 from prompt import build_greeter_prompt, build_reservation_prompt
+from custom_inference import DeepgramSTT, OpenAILLM, PiperTTS
 
 load_dotenv()
 logger = logging.getLogger("ring-agent")
@@ -190,9 +191,9 @@ async def entrypoint(ctx: JobContext) -> None:
     restaurant = await _fetch_restaurant(called_number)
 
     session = AgentSession(
-        stt=inference.STT("deepgram/nova-2-phonecall", language="en"),
-        llm=inference.LLM("openai/gpt-4o", extra_kwargs={"temperature": 0.5}),
-        tts=inference.TTS("elevenlabs/eleven_turbo_v2_5", voice="XrExE9yKIg1WjnnlVkGX"),
+        stt=DeepgramSTT(language="en"),
+        llm=OpenAILLM(model="gpt-4o", temperature=0.5),
+        tts=PiperTTS(voice="en_US-amy-medium"),
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(),
             endpointing={

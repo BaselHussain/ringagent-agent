@@ -1,4 +1,7 @@
 livekit-agents>=0.12.0
 livekit-plugins-noise-cancellation~=0.2
+openai>=1.0.0
+deepgram-sdk>=3.0.0
+piper-tts>=1.2.0
 httpx
 python-dotenv
