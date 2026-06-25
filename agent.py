@@ -33,24 +33,60 @@ DEMO_RESTAURANT_ID = os.environ.get("DEMO_RESTAURANT_ID", "86982824-7063-4235-ad
 
 
 # ---------------------------------------------------------------------------
-# Reservation Agent — activated on handoff from GreeterAgent
+# Unified Sarah Agent — Greeting + Reservation handling in one agent
+# This ensures full conversation history is always available
 # ---------------------------------------------------------------------------
 
-class ReservationAgent(Agent):
+class SarahAgent(Agent):
     def __init__(self, restaurant: dict, caller_phone: str) -> None:
         self.restaurant = restaurant
         self.caller_phone = caller_phone
+        restaurant_name = restaurant.get("name", "the restaurant")
+        self._restaurant_name = restaurant_name
         super().__init__(
-            instructions=build_reservation_prompt(restaurant, caller_phone),
+            instructions=self._build_unified_prompt(restaurant, caller_phone),
             tools=[EndCallTool()],
         )
 
+    def _build_unified_prompt(self, restaurant: dict, caller_phone: str) -> str:
+        """Build a unified prompt that handles greeting, FAQ, and reservation."""
+        greeter_part = build_greeter_prompt(restaurant)
+        reservation_part = build_reservation_prompt(restaurant, caller_phone)
+
+        return f"""{greeter_part}
+
+---
+
+TRANSITION TO RESERVATION:
+When the caller asks to make a reservation (e.g., "I'd like to book", "Can I reserve a table?"):
+1. Move immediately to the RESERVATION FLOW below
+2. DO NOT greet again or re-introduce yourself
+3. SCAN the entire conversation history (from greeting phase) for any information already given
+4. Use information from greeting phase in reservation (name, party size, date, time if already stated)
+
+---
+
+RESERVATION FLOW:
+{reservation_part}"""
+
     async def on_enter(self) -> None:
-        # Session context already has conversation history — just continue naturally
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+        except ImportError:
+            from backports.zoneinfo import ZoneInfo
+        timezone = self.restaurant.get("timezone", "America/New_York")
+        try:
+            now = datetime.now(ZoneInfo(timezone))
+            hour = now.hour
+        except Exception:
+            hour = datetime.now().hour
+        time_of_day = "morning" if hour < 12 else "afternoon" if hour < 17 else "evening"
+
         self.session.generate_reply(
-            instructions="You've just taken over to handle the reservation. "
-                         "Continue naturally from where the conversation left off. "
-                         "Do not re-introduce yourself. Start STEP A immediately."
+            instructions=f"Say exactly this greeting: "
+                         f"'Good {time_of_day}, thank you for calling {self._restaurant_name}. "
+                         f"This is Sarah, how can I help you today?' — say nothing else."
         )
 
     @function_tool
@@ -95,51 +131,6 @@ class ReservationAgent(Agent):
             "Reservation saved. The caller has already heard the confirmation message "
             "and been asked if they need anything else. Say nothing."
         )
-
-
-# ---------------------------------------------------------------------------
-# Greeter Agent — first agent, handles FAQ and triggers handoff to booking
-# ---------------------------------------------------------------------------
-
-class GreeterAgent(Agent):
-    def __init__(self, restaurant: dict, caller_phone: str) -> None:
-        self.restaurant = restaurant
-        self.caller_phone = caller_phone
-        restaurant_name = restaurant.get("name", "the restaurant")
-        super().__init__(
-            instructions=build_greeter_prompt(restaurant),
-            tools=[EndCallTool()],
-        )
-        self._restaurant_name = restaurant_name
-
-    async def on_enter(self) -> None:
-        from datetime import datetime
-        try:
-            from zoneinfo import ZoneInfo
-        except ImportError:
-            from backports.zoneinfo import ZoneInfo
-        timezone = self.restaurant.get("timezone", "America/New_York")
-        try:
-            now = datetime.now(ZoneInfo(timezone))
-            hour = now.hour
-        except Exception:
-            hour = datetime.now().hour
-        time_of_day = "morning" if hour < 12 else "afternoon" if hour < 17 else "evening"
-
-        self.session.generate_reply(
-            instructions=f"Say exactly this greeting: "
-                         f"'Good {time_of_day}, thank you for calling {self._restaurant_name}. "
-                         f"This is Sarah, how can I help you today?' — say nothing else."
-        )
-
-    @function_tool
-    async def start_reservation(self, context: RunContext) -> "ReservationAgent":
-        """Call this the moment the caller asks to make a reservation.
-        Transfers the session to the reservation booking flow.
-        """
-        logger.info("Handing off to ReservationAgent")
-        # Pass chat_ctx so ReservationAgent has full conversation history
-        return ReservationAgent(self.restaurant, self.caller_phone)
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +195,7 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     await session.start(
-        agent=GreeterAgent(restaurant, caller_phone),
+        agent=SarahAgent(restaurant, caller_phone),
         room=ctx.room,
     )
 
