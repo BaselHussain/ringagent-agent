@@ -16,6 +16,7 @@ from livekit.agents import (
     JobContext,
     RunContext,
     TurnHandlingOptions,
+    EndpointingOptions,
     cli,
     inference,
     room_io,
@@ -191,14 +192,19 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session = AgentSession(
         stt=inference.STT("deepgram/nova-2-phonecall", language="en"),
-        llm=inference.LLM("openai/gpt-4o", extra_kwargs={"temperature": 0.65}),
+        llm=inference.LLM("openai/gpt-4o", extra_kwargs={"temperature": 0.5}),
         tts=inference.TTS("cartesia/sonic-2", voice="b7d50908-b17c-442d-ad8d-810c63997ed9"),
         turn_handling=TurnHandlingOptions(
             interruption={
                 "resume_false_interruption": True,
-                "false_interruption_timeout": 1.5,
+                "false_interruption_timeout": 1.2,
             },
             preemptive_generation={"enabled": True, "max_retries": 3},
+        ),
+        endpointing=EndpointingOptions(
+            mode="dynamic",
+            min_delay=0.3,
+            max_delay=1.0,
         ),
     )
 
