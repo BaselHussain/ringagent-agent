@@ -22,6 +22,7 @@ from livekit.agents import (
 )
 from livekit.agents.beta import EndCallTool
 from livekit.agents.llm import function_tool
+from livekit.plugins import noise_cancellation
 
 from prompt import build_greeter_prompt, build_reservation_prompt
 
@@ -185,20 +186,37 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=inference.LLM("openai/gpt-4o", extra_kwargs={"temperature": 0.5}),
         tts=inference.TTS("elevenlabs/eleven_turbo_v2_5", voice="XrExE9yKIg1WjnnlVkGX"),
         turn_handling=TurnHandlingOptions(
-            interruption={
-                "resume_false_interruption": True,
-                "false_interruption_timeout": 2.5,
-                "min_duration": 0.5,
+            turn_detection=inference.TurnDetector(
+                vad_threshold=0.7,
+                prefix_padding_ms=300,
+            ),
+            endpointing={
+                "mode": "fixed",
+                "min_delay": 0.4,
+                "max_delay": 2.0,
             },
-            preemptive_generation={"enabled": True, "max_retries": 5},
-            adaptive=True,
+            interruption={
+                "mode": "adaptive",
+                "min_duration": 0.5,
+                "min_words": 0,
+                "false_interruption_timeout": 2.0,
+                "resume_false_interruption": True,
+            },
+            preemptive_generation={
+                "enabled": True,
+                "preemptive_tts": False,
+            },
         ),
     )
 
     await session.start(
         agent=SarahAgent(restaurant, caller_phone),
         room=ctx.room,
-        room_opts={"auto_subscribe": True, "close_on_disconnect": False},
+        room_options=room_io.RoomOptions(
+            audio_input=room_io.AudioInputOptions(
+                noise_cancellation=noise_cancellation.BVCTelephony(),
+            ),
+        ),
     )
 
 
