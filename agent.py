@@ -45,6 +45,7 @@ class SarahAgent(Agent):
         self.caller_phone = caller_phone
         restaurant_name = restaurant.get("name", "the restaurant")
         self._restaurant_name = restaurant_name
+        self._reservation_saved = False
         super().__init__(
             instructions=self._build_unified_prompt(restaurant, caller_phone),
             tools=[EndCallTool()],
@@ -111,7 +112,13 @@ RESERVATION FLOW:
             time: Reservation time e.g. '7:00 PM'
             notes: Special occasion or requests e.g. 'Birthday, wants a cake'. Empty string if none.
         """
+        if self._reservation_saved:
+            logger.warning("Duplicate save_reservation call prevented (already saved)")
+            return "Reservation already saved."
+
         logger.info("Saving reservation: %s, %s, %s, %s", customer_name, party_size, date, time)
+        self._reservation_saved = True
+
         try:
             async with httpx.AsyncClient() as client:
                 await client.post(
@@ -184,12 +191,12 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session = AgentSession(
         stt=inference.STT("deepgram/nova-2-phonecall", language="en"),
-        llm=inference.LLM("openai/gpt-4o-mini", extra_kwargs={"temperature": 0.5}),
+        llm=inference.LLM("openai/gpt-4o", extra_kwargs={"temperature": 0.5}),
         tts=inference.TTS("elevenlabs/eleven_turbo_v2_5", voice="XrExE9yKIg1WjnnlVkGX"),
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(),
             endpointing={
-                "min_delay": 0.2,
+                "min_delay": 0.4,
             },
             interruption={
                 "mode": "adaptive",
