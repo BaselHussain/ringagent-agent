@@ -186,25 +186,15 @@ async def entrypoint(ctx: JobContext) -> None:
         llm=inference.LLM("openai/gpt-4o", extra_kwargs={"temperature": 0.5}),
         tts=inference.TTS("elevenlabs/eleven_turbo_v2_5", voice="XrExE9yKIg1WjnnlVkGX"),
         turn_handling=TurnHandlingOptions(
-            turn_detection=inference.TurnDetector(
-                vad_threshold=0.7,
-                prefix_padding_ms=300,
-            ),
-            endpointing={
-                "mode": "fixed",
-                "min_delay": 0.4,
-                "max_delay": 2.0,
-            },
+            turn_detection=inference.TurnDetector(),
             interruption={
                 "mode": "adaptive",
                 "min_duration": 0.5,
-                "min_words": 0,
                 "false_interruption_timeout": 2.0,
                 "resume_false_interruption": True,
             },
             preemptive_generation={
                 "enabled": True,
-                "preemptive_tts": False,
             },
         ),
     )
