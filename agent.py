@@ -189,7 +189,7 @@ async def entrypoint(ctx: JobContext) -> None:
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(),
             endpointing={
-                "min_delay": 0.4,
+                "min_delay": 0.3,
             },
             interruption={
                 "mode": "adaptive",
