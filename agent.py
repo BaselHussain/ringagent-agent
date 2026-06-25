@@ -193,7 +193,7 @@ async def entrypoint(ctx: JobContext) -> None:
     session = AgentSession(
         stt=inference.STT("deepgram/nova-2-phonecall", language="en"),
         llm=inference.LLM("openai/gpt-4o", extra_kwargs={"temperature": 0.5}),
-        tts=inference.TTS("cartesia/sonic-2", voice="b7d50908-b17c-442d-ad8d-810c63997ed9"),
+        tts=inference.TTS("elevenlabs/eleven_turbo_v2_5", voice="XrExE9yKIg1WjnnlVkGX"),
         turn_handling=TurnHandlingOptions(
             interruption={
                 "resume_false_interruption": True,
