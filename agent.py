@@ -184,12 +184,12 @@ async def entrypoint(ctx: JobContext) -> None:
 
     session = AgentSession(
         stt=inference.STT("deepgram/nova-2-phonecall", language="en"),
-        llm=inference.LLM("openai/gpt-4o", extra_kwargs={"temperature": 0.5}),
+        llm=inference.LLM("openai/gpt-4o-mini", extra_kwargs={"temperature": 0.5}),
         tts=inference.TTS("elevenlabs/eleven_turbo_v2_5", voice="XrExE9yKIg1WjnnlVkGX"),
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(),
             endpointing={
-                "min_delay": 0.3,
+                "min_delay": 0.2,
             },
             interruption={
                 "mode": "adaptive",
