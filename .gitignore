@@ -10,3 +10,7 @@ build/
 .pytest_cache/
 lk.exe
 sip/
+
+# local backups
+agent.py.backup
+*.backup
