@@ -30,6 +30,34 @@ def _faq_text(faqs: list) -> str:
     return f"\n\nFREQUENTLY ASKED QUESTIONS:\n{lines}"
 
 
+def _menu_text(menu: list) -> str:
+    if not menu:
+        return ""
+    lines = []
+    for m in menu:
+        line = m.get("name", "")
+        price = m.get("price")
+        if price is not None and str(price).strip() != "":
+            try:
+                line += f" — ${float(price):.2f}"
+            except (TypeError, ValueError):
+                line += f" — ${price}"
+        cat = m.get("category")
+        if cat:
+            line += f" ({cat})"
+        desc = m.get("description")
+        if desc:
+            line += f": {desc}"
+        lines.append(f"- {line}")
+    return "\n\nMENU (describe these dishes and quote these prices — never invent items or prices):\n" + "\n".join(lines)
+
+
+def _info_text(info) -> str:
+    if not info or not str(info).strip():
+        return ""
+    return f"\n\nADDITIONAL INFORMATION:\n{str(info).strip()}"
+
+
 BANNED_PHRASES = """BANNED: "one moment", "hold on", "let me check", "let me save that", "Lovely!", "Wonderful!", "Absolutely!", "Perfect!" (standalone).
 Never use these. Silence is better."""
 
@@ -48,6 +76,8 @@ def build_greeter_prompt(restaurant: dict) -> str:
     name = restaurant.get("name", "the restaurant")
     timezone = restaurant.get("timezone", "America/New_York")
     faqs = restaurant.get("faqs", [])
+    menu = restaurant.get("menu_items", [])
+    info = restaurant.get("info", "")
 
     return f"""{BANNED_PHRASES}
 
@@ -64,7 +94,7 @@ Name: {name}
 Address: {restaurant.get('address', '')}
 Phone: {restaurant.get('phone', '')}
 Hours:
-{_hours_text(restaurant.get('hours', {}))}{_faq_text(faqs)}
+{_hours_text(restaurant.get('hours', {}))}{_menu_text(menu)}{_info_text(info)}{_faq_text(faqs)}
 
 HANDLING QUESTIONS:
 Answer instantly and confidently from the restaurant information above.
