@@ -149,26 +149,46 @@ RESERVATION FLOW:
         )
 
     @function_tool
-    async def lookup_reservation(self, context: RunContext) -> str:
-        """Find the caller's existing upcoming reservation(s) using their phone number.
-        Call this FIRST whenever the caller wants to change or cancel a reservation.
-        Returns the details — including the reservation_id you need — or reports that none were found."""
+    async def lookup_reservation(self, context: RunContext, name: str = "", date: str = "") -> str:
+        """Find the caller's existing upcoming reservation(s). Call this FIRST whenever the caller wants
+        to change or cancel a reservation. With NO arguments it looks up by the number they're calling
+        from. If that finds nothing, ask the caller for the name (and date if they know it) on the booking,
+        then call this again with name set to search by name instead.
+        Returns the details — including the reservation_id you need — or reports that none were found.
+
+        Args:
+            name: The name the booking is under, to search by name (empty to search by caller's phone)
+            date: Optional date to narrow a name search e.g. 'Friday July 18' (empty if unknown)
+        """
         try:
             async with httpx.AsyncClient() as client:
-                r = await client.get(
-                    f"{RINGAGENT_API_URL}/agent/reservations-by-phone/{self.caller_phone}",
-                    params={"restaurant_id": self.restaurant.get("id", "")},
-                    timeout=10.0,
-                )
+                if name.strip():
+                    r = await client.get(
+                        f"{RINGAGENT_API_URL}/agent/reservations-by-name",
+                        params={"restaurant_id": self.restaurant.get("id", ""), "name": name, "date": date},
+                        timeout=10.0,
+                    )
+                else:
+                    r = await client.get(
+                        f"{RINGAGENT_API_URL}/agent/reservations-by-phone/{self.caller_phone}",
+                        params={"restaurant_id": self.restaurant.get("id", "")},
+                        timeout=10.0,
+                    )
                 rows = r.json() if r.status_code == 200 else []
         except Exception as e:
             logger.error("lookup_reservation failed: %s", e)
             return "I couldn't look that up just now. Ask the caller for the name and date on the booking."
 
         if not rows:
+            if name.strip():
+                return (
+                    "No reservation was found under that name. Double-check the name and date with the "
+                    "caller; if it's still not found, warmly take their name and number and let them know "
+                    "a team member will follow up."
+                )
             return (
-                "No reservation was found under this phone number. Ask the caller for the name and date "
-                "the booking is under; if you still can't find it, let them know a team member will follow up."
+                "No reservation was found under this phone number. Ask the caller for the name (and date) "
+                "the booking is under, then call lookup_reservation again with that name."
             )
         lines = [
             f"reservation_id={row.get('id')}: {row.get('customer_name')}, party of "
