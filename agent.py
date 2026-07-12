@@ -102,8 +102,9 @@ RESERVATION FLOW:
         time: str,
         notes: str = "",
     ) -> str:
-        """Call ONLY after the caller has explicitly said yes to the full readback of all four details.
-        Say ZERO words before calling this. After it returns, say ZERO words — confirmation is already delivered.
+        """Call ONLY after the caller has explicitly said yes to the full readback of all four details,
+        AND after you have already asked for special requests / seating preferences (STEP B.5) and captured them in notes.
+        Say nothing while this runs. After it returns, speak the spoken confirmation the tool result tells you to give.
 
         Args:
             customer_name: The caller's name for the reservation
@@ -137,8 +138,9 @@ RESERVATION FLOW:
         except Exception as e:
             logger.error("Failed to save reservation: %s", e)
         return (
-            "Reservation saved. The caller has already heard the confirmation message "
-            "and been asked if they need anything else. Say nothing."
+            "Reservation saved successfully. Now speak a brief, warm confirmation OUT LOUD to the caller: "
+            "restate their name, party size, date and time (and the note if there is one), then ask "
+            "'Is there anything else I can help you with?' Stay on the line and wait — do NOT end the call."
         )
 
 
