@@ -46,6 +46,8 @@ class SarahAgent(Agent):
         restaurant_name = restaurant.get("name", "the restaurant")
         self._restaurant_name = restaurant_name
         self._reservation_saved = False
+        self._caller_name = ""
+        self._lead_reason = ""
         super().__init__(
             instructions=self._build_unified_prompt(restaurant, caller_phone),
             tools=[EndCallTool()],
@@ -119,6 +121,9 @@ RESERVATION FLOW:
 
         logger.info("Saving reservation: %s, %s, %s, %s", customer_name, party_size, date, time)
         self._reservation_saved = True
+        self._caller_name = customer_name
+        if not self._lead_reason:
+            self._lead_reason = "reservation"
 
         try:
             async with httpx.AsyncClient() as client:
@@ -142,6 +147,108 @@ RESERVATION FLOW:
             "restate their name, party size, date and time (and the note if there is one), then ask "
             "'Is there anything else I can help you with?' Stay on the line and wait — do NOT end the call."
         )
+
+    @function_tool
+    async def lookup_reservation(self, context: RunContext) -> str:
+        """Find the caller's existing upcoming reservation(s) using their phone number.
+        Call this FIRST whenever the caller wants to change or cancel a reservation.
+        Returns the details — including the reservation_id you need — or reports that none were found."""
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(
+                    f"{RINGAGENT_API_URL}/agent/reservations-by-phone/{self.caller_phone}",
+                    params={"restaurant_id": self.restaurant.get("id", "")},
+                    timeout=10.0,
+                )
+                rows = r.json() if r.status_code == 200 else []
+        except Exception as e:
+            logger.error("lookup_reservation failed: %s", e)
+            return "I couldn't look that up just now. Ask the caller for the name and date on the booking."
+
+        if not rows:
+            return (
+                "No reservation was found under this phone number. Ask the caller for the name and date "
+                "the booking is under; if you still can't find it, let them know a team member will follow up."
+            )
+        lines = [
+            f"reservation_id={row.get('id')}: {row.get('customer_name')}, party of "
+            f"{row.get('party_size')}, {row.get('date')} at {row.get('time')} (status: {row.get('status')})"
+            for row in rows
+        ]
+        return (
+            "Found these reservation(s). Read the details back so the caller confirms which one, then use "
+            "its reservation_id to modify or cancel:\n" + "\n".join(lines)
+        )
+
+    @function_tool
+    async def modify_reservation(
+        self,
+        context: RunContext,
+        reservation_id: str,
+        party_size: str = "",
+        date: str = "",
+        time: str = "",
+    ) -> str:
+        """Change an existing reservation. Call ONLY after lookup_reservation and after the caller
+        confirms the change. Pass the reservation_id from lookup_reservation and ONLY the fields that change.
+
+        Args:
+            reservation_id: The id from lookup_reservation
+            party_size: New party size e.g. '4 people' (empty string if unchanged)
+            date: New date e.g. 'Saturday July 19' (empty string if unchanged)
+            time: New time e.g. '8:00 PM' (empty string if unchanged)
+        """
+        self._lead_reason = "reservation change"
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{RINGAGENT_API_URL}/agent/modify-reservation",
+                    json={"reservation_id": reservation_id, "party_size": party_size, "date": date, "time": time},
+                    timeout=10.0,
+                )
+        except Exception as e:
+            logger.error("modify_reservation failed: %s", e)
+            return "Something went wrong updating that. Tell the caller a team member will follow up."
+        return (
+            "Reservation updated. Now speak a brief, warm confirmation OUT LOUD restating the new details, "
+            "then ask if there's anything else. Stay on the line — do NOT end the call."
+        )
+
+    @function_tool
+    async def cancel_reservation(self, context: RunContext, reservation_id: str) -> str:
+        """Cancel an existing reservation. Call ONLY after lookup_reservation and after the caller
+        EXPLICITLY confirms they want to cancel. Pass the reservation_id from lookup_reservation."""
+        self._lead_reason = "reservation cancellation"
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{RINGAGENT_API_URL}/agent/cancel-reservation",
+                    json={"reservation_id": reservation_id},
+                    timeout=10.0,
+                )
+        except Exception as e:
+            logger.error("cancel_reservation failed: %s", e)
+            return "Something went wrong cancelling that. Tell the caller a team member will follow up."
+        return (
+            "Reservation cancelled. Now confirm OUT LOUD, warmly, that it's cancelled and ask if there's "
+            "anything else. Stay on the line — do NOT end the call."
+        )
+
+    @function_tool
+    async def capture_lead(self, context: RunContext, name: str = "", reason: str = "") -> str:
+        """Silently record who is calling and why, for the restaurant's records. Call this once, early,
+        as soon as you naturally know the caller's name and/or why they're calling (a booking, a question,
+        a change, an event, etc.). Say NOTHING out loud when calling this — it's a background note.
+
+        Args:
+            name: The caller's name if known (empty string if not)
+            reason: A short reason for the call e.g. 'reservation', 'asking about hours', 'private event'
+        """
+        if name:
+            self._caller_name = name
+        if reason:
+            self._lead_reason = reason
+        return "Noted silently. Say nothing about this to the caller; continue naturally."
 
 
 # ---------------------------------------------------------------------------
@@ -213,8 +320,30 @@ async def entrypoint(ctx: JobContext) -> None:
         ),
     )
 
+    agent = SarahAgent(restaurant, caller_phone)
+
+    # Log a lead for every call when it ends (converted=True if a booking was made this call)
+    async def _write_lead() -> None:
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{RINGAGENT_API_URL}/agent/lead",
+                    json={
+                        "restaurant_id": restaurant.get("id"),
+                        "name": agent._caller_name,
+                        "phone": caller_phone,
+                        "reason": agent._lead_reason or "inbound call",
+                        "converted": agent._reservation_saved,
+                    },
+                    timeout=10.0,
+                )
+        except Exception as e:
+            logger.error("Lead capture failed: %s", e)
+
+    ctx.add_shutdown_callback(_write_lead)
+
     await session.start(
-        agent=SarahAgent(restaurant, caller_phone),
+        agent=agent,
         room=ctx.room,
         room_options=room_io.RoomOptions(
             audio_input=room_io.AudioInputOptions(
