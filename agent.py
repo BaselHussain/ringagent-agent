@@ -95,6 +95,58 @@ RESERVATION FLOW:
         )
 
     @function_tool
+    async def check_availability(
+        self,
+        context: RunContext,
+        party_size: str,
+        date: str,
+        time: str,
+    ) -> str:
+        """Call this in STEP B.6, right after you have the party size, date AND time — BEFORE special
+        requests and BEFORE saving. Confirms the restaurant has room at that time. Say nothing while it runs.
+        Follow the instruction it returns. Never save a reservation for a time this tool reports as full.
+
+        Args:
+            party_size: Number of people e.g. '4 people'
+            date: Full date e.g. 'Friday June 27'
+            time: Requested time e.g. '7:00 PM'
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{RINGAGENT_API_URL}/agent/check-availability",
+                    json={
+                        "restaurant_id": self.restaurant.get("id"),
+                        "party_size": party_size,
+                        "date": date,
+                        "time": time,
+                    },
+                    timeout=10.0,
+                )
+            data = resp.json()
+        except Exception as e:
+            logger.error("check_availability failed (failing open): %s", e)
+            return "Availability could not be checked; treat the time as open and continue to special requests."
+
+        # Fail-open: capacity off / not configured.
+        if not data.get("enforced", False):
+            return "That time is open. Continue to special requests."
+        if data.get("available"):
+            return "That time is open. Continue to special requests."
+
+        alts = data.get("alternatives") or []
+        if alts:
+            return (
+                f"That time is fully booked. Offer these alternative times to the caller: {', '.join(alts)}. "
+                "Ask which they'd like, then call check_availability again with the new time before continuing. "
+                "Do not book the original time."
+            )
+        return (
+            "That time is fully booked and nothing nearby is open that day. Apologize and ask the caller "
+            "for a different date or time, then call check_availability again with the new details."
+        )
+
+    @function_tool
     async def save_reservation(
         self,
         context: RunContext,
@@ -104,7 +156,8 @@ RESERVATION FLOW:
         time: str,
         notes: str = "",
     ) -> str:
-        """Call ONLY after the caller has explicitly said yes to the full readback of all four details,
+        """Call ONLY after check_availability (STEP B.6) has confirmed the time is open, the caller has
+        explicitly said yes to the full readback of all four details,
         AND after you have already asked for special requests / seating preferences (STEP B.5) and captured them in notes.
         Say nothing while this runs. After it returns, speak the spoken confirmation the tool result tells you to give.
 
