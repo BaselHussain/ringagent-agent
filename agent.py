@@ -32,6 +32,8 @@ logging.basicConfig(level=logging.DEBUG)
 
 RINGAGENT_API_URL = os.environ.get("RINGAGENT_API_URL", "")
 DEMO_RESTAURANT_ID = os.environ.get("DEMO_RESTAURANT_ID", "86982824-7063-4235-ad95-329e2877f483")
+# Platform default voice — used when a restaurant hasn't picked its own voice.
+DEFAULT_VOICE_ID = "XrExE9yKIg1WjnnlVkGX"
 
 
 # ---------------------------------------------------------------------------
@@ -374,7 +376,10 @@ async def entrypoint(ctx: JobContext) -> None:
     session = AgentSession(
         stt=inference.STT("deepgram/nova-2-phonecall", language="en"),
         llm=inference.LLM("openai/gpt-4o", extra_kwargs={"temperature": 0.5}),
-        tts=inference.TTS("elevenlabs/eleven_turbo_v2_5", voice="XrExE9yKIg1WjnnlVkGX"),
+        tts=inference.TTS(
+            "elevenlabs/eleven_turbo_v2_5",
+            voice=(restaurant.get("voice_id") or DEFAULT_VOICE_ID),
+        ),
         turn_handling=TurnHandlingOptions(
             turn_detection=inference.TurnDetector(),
             endpointing={
