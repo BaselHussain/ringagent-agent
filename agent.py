@@ -7,6 +7,7 @@ Architecture: Two agents with handoff per LiveKit SKILL.md guidance.
 import asyncio
 import logging
 import os
+import time
 import httpx
 from dotenv import load_dotenv
 
@@ -404,11 +405,48 @@ async def entrypoint(ctx: JobContext) -> None:
     )
 
     agent = SarahAgent(restaurant, caller_phone)
+    call_start = time.monotonic()
 
-    # Log a lead for every call when it ends (converted=True if a booking was made this call)
-    async def _write_lead() -> None:
+    # When the call ends: record the call (so it's counted + has a transcript)
+    # AND log a lead (converted=True if a booking was made this call).
+    async def _on_call_end() -> None:
+        outcome = "booked" if agent._reservation_saved else "other"
+        duration = int(time.monotonic() - call_start)
+        # Best-effort transcript from the conversation history.
+        transcript = ""
         try:
-            async with httpx.AsyncClient() as client:
+            parts = []
+            for item in session.history.items:
+                role = getattr(item, "role", "") or ""
+                text = getattr(item, "text_content", None)
+                if text is None:
+                    text = getattr(item, "content", "")
+                if isinstance(text, (list, tuple)):
+                    text = " ".join(str(t) for t in text)
+                text = (str(text) if text else "").strip()
+                if role in ("user", "assistant") and text:
+                    speaker = "Caller" if role == "user" else agent._agent_name
+                    parts.append(f"{speaker}: {text}")
+            transcript = "\n".join(parts)
+        except Exception as e:
+            logger.error("Transcript build failed: %s", e)
+
+        async with httpx.AsyncClient() as client:
+            try:
+                await client.post(
+                    f"{RINGAGENT_API_URL}/agent/end-of-call",
+                    json={
+                        "restaurant_id": restaurant.get("id"),
+                        "caller_phone": caller_phone,
+                        "duration": duration,
+                        "transcript": transcript,
+                        "outcome": outcome,
+                    },
+                    timeout=10.0,
+                )
+            except Exception as e:
+                logger.error("Call log failed: %s", e)
+            try:
                 await client.post(
                     f"{RINGAGENT_API_URL}/agent/lead",
                     json={
@@ -420,10 +458,10 @@ async def entrypoint(ctx: JobContext) -> None:
                     },
                     timeout=10.0,
                 )
-        except Exception as e:
-            logger.error("Lead capture failed: %s", e)
+            except Exception as e:
+                logger.error("Lead capture failed: %s", e)
 
-    ctx.add_shutdown_callback(_write_lead)
+    ctx.add_shutdown_callback(_on_call_end)
 
     # Hang up on a silent/abandoned call: one gentle check-in, then a friendly
     # sign-off and disconnect — so the line doesn't stay open on dead air.

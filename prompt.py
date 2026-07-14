@@ -39,7 +39,10 @@ def _menu_text(menu: list) -> str:
         price = m.get("price")
         if price is not None and str(price).strip() != "":
             try:
-                line += f" — ${float(price):.2f}"
+                p = float(price)
+                # Whole dollars as "$9" (not "$9.00" — the model misreads .00 as
+                # hundreds); keep cents only when they're non-zero ("$9.50").
+                line += f" — ${int(p)}" if p == int(p) else f" — ${p:.2f}"
             except (TypeError, ValueError):
                 line += f" — ${price}"
         cat = m.get("category")
