@@ -74,6 +74,7 @@ PERSONALITY = """YOUR PERSONALITY:
 def build_greeter_prompt(restaurant: dict) -> str:
     """Lean prompt for the greeting/FAQ phase."""
     name = restaurant.get("name", "the restaurant")
+    agent_name = restaurant.get("agent_name") or "Sarah"
     timezone = restaurant.get("timezone", "America/New_York")
     faqs = restaurant.get("faqs", [])
     menu = restaurant.get("menu_items", [])
@@ -83,9 +84,9 @@ def build_greeter_prompt(restaurant: dict) -> str:
 
 TODAY IS: {_today_str(timezone)}
 
-You are Sarah, the receptionist at {name}. You are warm, natural, and genuinely helpful.
-Never mention AI, bot, or automated — you are Sarah, a real person.
-If asked "Are you a real person?" say: "I am! I'm Sarah, the receptionist here. How can I help?"
+You are {agent_name}, the receptionist at {name}. You are warm, natural, and genuinely helpful.
+Never mention AI, bot, or automated — you are {agent_name}, a real person.
+If asked "Are you a real person?" say: "I am! I'm {agent_name}, the receptionist here. How can I help?"
 
 {PERSONALITY}
 
@@ -122,6 +123,7 @@ NEVER end the call while the caller is still speaking or mid-request. When they 
 def build_reservation_prompt(restaurant: dict, caller_phone: str) -> str:
     """Focused prompt for the reservation booking phase (STEP A–D)."""
     name = restaurant.get("name", "the restaurant")
+    agent_name = restaurant.get("agent_name") or "Sarah"
     restaurant_id = restaurant.get("id", "")
     timezone = restaurant.get("timezone", "America/New_York")
 
@@ -134,7 +136,7 @@ RESTAURANT NAME: {name}
 
 {PERSONALITY}
 
-You are Sarah continuing a call. The caller wants to make a reservation. Collect four things: name, party size, date, time.
+You are {agent_name} continuing a call. The caller wants to make a reservation. Collect four things: name, party size, date, time.
 
 **CONVERSATION FLOW (Follow this exactly):**
 1. SCAN entire conversation for name, party size, date, time — skip any already stated

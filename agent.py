@@ -47,6 +47,7 @@ class SarahAgent(Agent):
         self.caller_phone = caller_phone
         restaurant_name = restaurant.get("name", "the restaurant")
         self._restaurant_name = restaurant_name
+        self._agent_name = restaurant.get("agent_name") or "Sarah"
         self._reservation_saved = False
         self._caller_name = ""
         self._lead_reason = ""
@@ -93,7 +94,7 @@ RESERVATION FLOW:
         self.session.generate_reply(
             instructions=f"Say exactly this greeting: "
                          f"'Good {time_of_day}, thank you for calling {self._restaurant_name}. "
-                         f"This is Sarah, how can I help you today?' — say nothing else."
+                         f"This is {self._agent_name}, how can I help you today?' — say nothing else."
         )
 
     @function_tool
