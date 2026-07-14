@@ -4,6 +4,7 @@ Architecture: Two agents with handoff per LiveKit SKILL.md guidance.
   GreeterAgent  → handles FAQ/general chat (lean context)
   ReservationAgent → handles booking flow STEP A-D (focused context)
 """
+import asyncio
 import logging
 import os
 import httpx
@@ -16,6 +17,7 @@ from livekit.agents import (
     JobContext,
     RunContext,
     TurnHandlingOptions,
+    UserStateChangedEvent,
     cli,
     inference,
     room_io,
@@ -397,6 +399,8 @@ async def entrypoint(ctx: JobContext) -> None:
                 "enabled": True,
             },
         ),
+        # Mark the caller "away" after this many seconds of total silence.
+        user_away_timeout=10.0,
     )
 
     agent = SarahAgent(restaurant, caller_phone)
@@ -420,6 +424,38 @@ async def entrypoint(ctx: JobContext) -> None:
             logger.error("Lead capture failed: %s", e)
 
     ctx.add_shutdown_callback(_write_lead)
+
+    # Hang up on a silent/abandoned call: one gentle check-in, then a friendly
+    # sign-off and disconnect — so the line doesn't stay open on dead air.
+    inactivity_task: "asyncio.Task | None" = None
+
+    async def _check_if_present() -> None:
+        try:
+            await session.generate_reply(
+                instructions="The caller has gone quiet. Warmly check if they're still "
+                             "there in ONE short line (e.g. 'Are you still there?'). Say nothing else."
+            )
+            await asyncio.sleep(12)
+            await session.generate_reply(
+                instructions="The caller is still silent. Say ONE short, friendly goodbye — "
+                             "'I'll let you go — feel free to call back anytime. Take care!' — and nothing else."
+            )
+            await asyncio.sleep(4)  # let the farewell finish playing before we cut the line
+        except asyncio.CancelledError:
+            return
+        await session.shutdown()
+
+    @session.on("user_state_changed")
+    def _on_user_state_changed(ev: UserStateChangedEvent) -> None:
+        nonlocal inactivity_task
+        if ev.new_state == "away":
+            if inactivity_task is None or inactivity_task.done():
+                inactivity_task = asyncio.create_task(_check_if_present())
+            return
+        # Caller spoke again — cancel the pending check-in/hang-up.
+        if inactivity_task is not None:
+            inactivity_task.cancel()
+            inactivity_task = None
 
     await session.start(
         agent=agent,
