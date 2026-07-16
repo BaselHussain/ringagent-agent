@@ -30,6 +30,19 @@ def _faq_text(faqs: list) -> str:
     return f"\n\nFREQUENTLY ASKED QUESTIONS:\n{lines}"
 
 
+def _spoken_price(p: float) -> str:
+    # Write prices the way they should be SPOKEN, so the agent says
+    # "sixteen dollars" — not "sixteen" (a bare "$16" gets read as just the
+    # number). Whole dollars -> "16 dollars"; with cents -> "16 dollars and
+    # 50 cents". Singular "1 dollar" for polish.
+    dollars = int(p)
+    cents = round((p - dollars) * 100)
+    dollar_word = "dollar" if dollars == 1 else "dollars"
+    if cents == 0:
+        return f"{dollars} {dollar_word}"
+    return f"{dollars} {dollar_word} and {cents} cents"
+
+
 def _menu_text(menu: list) -> str:
     if not menu:
         return ""
@@ -39,12 +52,9 @@ def _menu_text(menu: list) -> str:
         price = m.get("price")
         if price is not None and str(price).strip() != "":
             try:
-                p = float(price)
-                # Whole dollars as "$9" (not "$9.00" — the model misreads .00 as
-                # hundreds); keep cents only when they're non-zero ("$9.50").
-                line += f" — ${int(p)}" if p == int(p) else f" — ${p:.2f}"
+                line += f" — {_spoken_price(float(price))}"
             except (TypeError, ValueError):
-                line += f" — ${price}"
+                line += f" — {price} dollars"
         cat = m.get("category")
         if cat:
             line += f" ({cat})"
@@ -52,7 +62,11 @@ def _menu_text(menu: list) -> str:
         if desc:
             line += f": {desc}"
         lines.append(f"- {line}")
-    return "\n\nMENU (describe these dishes and quote these prices — never invent items or prices):\n" + "\n".join(lines)
+    return (
+        "\n\nMENU (describe these dishes and quote these prices — never invent "
+        "items or prices; always say prices out loud with the word \"dollars\", "
+        "e.g. \"sixteen dollars\"):\n" + "\n".join(lines)
+    )
 
 
 def _info_text(info) -> str:
