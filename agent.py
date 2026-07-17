@@ -26,8 +26,9 @@ from livekit.agents import (
 from livekit.agents.beta import EndCallTool
 from livekit.agents.llm import function_tool
 from livekit.plugins import noise_cancellation
+from pydantic import BaseModel, Field
 
-from prompt import build_greeter_prompt, build_reservation_prompt
+from prompt import build_greeter_prompt, build_reservation_prompt, build_order_prompt
 
 load_dotenv()
 logger = logging.getLogger("ring-agent")
@@ -37,6 +38,27 @@ RINGAGENT_API_URL = os.environ.get("RINGAGENT_API_URL", "")
 DEMO_RESTAURANT_ID = os.environ.get("DEMO_RESTAURANT_ID", "86982824-7063-4235-ad95-329e2877f483")
 # Platform default voice — used when a restaurant hasn't picked its own voice.
 DEFAULT_VOICE_ID = "XrExE9yKIg1WjnnlVkGX"
+
+
+class OrderItem(BaseModel):
+    """One line of a pickup order, exactly as the caller said it. The backend
+    matches the name against the real menu and prices it — the agent never
+    supplies a price or a total."""
+
+    name: str = Field(description="The dish as the caller said it, e.g. 'margherita pizza'")
+    quantity: int = Field(default=1, description="How many of this item")
+    notes: str = Field(default="", description="Modifications/allergies word-for-word, e.g. 'no onions, peanut allergy'")
+
+
+def _order_items_payload(items) -> list:
+    """OrderItem models (or dicts, defensively) -> plain dicts for the API."""
+    out = []
+    for i in items or []:
+        if hasattr(i, "model_dump"):
+            out.append(i.model_dump())
+        elif isinstance(i, dict):
+            out.append(i)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +74,7 @@ class SarahAgent(Agent):
         self._restaurant_name = restaurant_name
         self._agent_name = restaurant.get("agent_name") or "Sarah"
         self._reservation_saved = False
+        self._order_saved = False
         self._caller_name = ""
         self._lead_reason = ""
         super().__init__(
@@ -63,6 +86,7 @@ class SarahAgent(Agent):
         """Build a unified prompt that handles greeting, FAQ, and reservation."""
         greeter_part = build_greeter_prompt(restaurant)
         reservation_part = build_reservation_prompt(restaurant, caller_phone)
+        order_part = build_order_prompt(restaurant)
 
         return f"""{greeter_part}
 
@@ -75,10 +99,21 @@ When the caller asks to make a reservation (e.g., "I'd like to book", "Can I res
 3. SCAN the entire conversation history (from greeting phase) for any information already given
 4. Use information from greeting phase in reservation (name, party size, date, time if already stated)
 
+TRANSITION TO PICKUP ORDER:
+When the caller wants to order food to pick up (e.g., "I'd like to place an order", "Can I order a pizza for pickup?", "I want to grab some food to go"):
+1. Move immediately to the ORDER FLOW below — do not greet again
+2. SCAN the conversation history for anything already given (name, items, pickup time)
+3. A reservation and an order can BOTH happen on one call — the flows are independent
+
 ---
 
 RESERVATION FLOW:
-{reservation_part}"""
+{reservation_part}
+
+---
+
+ORDER FLOW:
+{order_part}"""
 
     async def on_enter(self) -> None:
         from datetime import datetime
@@ -314,6 +349,165 @@ RESERVATION FLOW:
         )
 
     @function_tool
+    async def quote_order(
+        self,
+        context: RunContext,
+        items: list[OrderItem],
+        requested_time: str = "",
+    ) -> str:
+        """Price a pickup order — STEP O.D, MANDATORY before reading any total back to the caller.
+        Pass the CURRENT full list of items every time. Writes nothing; safe to call repeatedly
+        after corrections. Say nothing while it runs. Follow the instruction it returns.
+
+        Args:
+            items: Every item currently in the order (name as the caller said it, quantity, notes)
+            requested_time: The caller's pickup-time words verbatim, e.g. 'in 20 minutes' or '7:30 PM' (empty if they don't mind)
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{RINGAGENT_API_URL}/agent/quote-order",
+                    json={
+                        "restaurant_id": self.restaurant.get("id"),
+                        "items": _order_items_payload(items),
+                        "requested_time": requested_time,
+                    },
+                    timeout=10.0,
+                )
+            if resp.status_code != 200:
+                raise RuntimeError(f"HTTP {resp.status_code}")
+            data = resp.json()
+        except Exception as e:
+            logger.error("quote_order failed: %s", e)
+            return (
+                "The order system isn't responding. Apologize and offer to take their name and number "
+                "so the restaurant can call them right back. Do not quote any prices."
+            )
+
+        if not data.get("enabled", False):
+            return (
+                "Phone orders aren't available at this restaurant. Apologize warmly and offer to help "
+                "with a reservation or a question instead."
+            )
+
+        unmatched = data.get("unmatched") or []
+        lines = data.get("lines") or []
+        if unmatched:
+            return (
+                f"These items are NOT on the menu: {', '.join(unmatched)}. Tell the caller, suggest the "
+                "closest real dishes from the MENU, fix the list with them, then call quote_order again "
+                "with the corrected items. Do not read back a total yet."
+            )
+        if not lines:
+            return "No items yet. Ask the caller what they'd like to order from the menu."
+
+        parts = []
+        for l in lines:
+            piece = f"{l.get('quantity')}x {l.get('name')}"
+            if l.get("line_total") is None:
+                piece += " (priced at pickup)"
+            else:
+                piece += f" (${l.get('line_total'):.2f})"
+            if l.get("notes"):
+                piece += f" [note: {l.get('notes')}]"
+            parts.append(piece)
+        total_bit = f"Total ${data.get('total', 0):.2f}"
+        if data.get("tax"):
+            total_bit += f" (includes ${data.get('tax'):.2f} tax)"
+        if data.get("has_unpriced"):
+            total_bit += " plus market-price items confirmed at pickup"
+        time_bit = f"Ready around {data.get('ready_text')}."
+        if data.get("adjusted"):
+            time_bit = (
+                f"The caller's requested time is sooner than the kitchen can manage — offer {data.get('ready_text')} "
+                "instead ('The kitchen can have that ready around that time — does that work?')."
+            )
+        return (
+            f"Order priced: {'; '.join(parts)}. {total_bit}. {time_bit} "
+            "Now read the full order, total and pickup time back to the caller and get an explicit yes "
+            "before calling save_order. Say the prices naturally (e.g. 'thirty-four fifty-six')."
+        )
+
+    @function_tool
+    async def save_order(
+        self,
+        context: RunContext,
+        customer_name: str,
+        items: list[OrderItem],
+        requested_time: str = "",
+        notes: str = "",
+    ) -> str:
+        """Save the pickup order — STEP O.F, ONLY after quote_order succeeded and the caller gave an
+        explicit yes to the full readback. Pass the SAME confirmed items. Say nothing while it runs.
+        Follow the instruction it returns exactly.
+
+        Args:
+            customer_name: Name for the order
+            items: The confirmed items (same list the caller said yes to)
+            requested_time: The caller's pickup-time words verbatim (same as quoted)
+            notes: Any order-wide note that isn't tied to one item (empty if none)
+        """
+        if self._order_saved:
+            return (
+                "The order is already saved. If the caller wants to change it now, apologize and say "
+                "they can mention it at pickup or a team member will adjust it — do not save again."
+            )
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{RINGAGENT_API_URL}/agent/save-order",
+                    json={
+                        "restaurant_id": self.restaurant.get("id"),
+                        "caller_phone": self.caller_phone,
+                        "customer_name": customer_name,
+                        "items": _order_items_payload(items),
+                        "requested_time": requested_time,
+                        "notes": notes,
+                    },
+                    timeout=10.0,
+                )
+        except Exception as e:
+            logger.error("save_order failed: %s", e)
+            return (
+                "The order could NOT be saved. Do NOT tell the caller it was placed. Apologize and take "
+                "their name and number so the restaurant can call them back to confirm the order."
+            )
+
+        if resp.status_code != 200:
+            logger.error("save_order rejected: HTTP %s %s", resp.status_code, resp.text[:200])
+            try:
+                err = (resp.json() or {}).get("error", "")
+            except Exception:
+                err = ""
+            if err == "no_matched_items":
+                return (
+                    "None of those items matched the menu, so nothing was saved. Go back to the order, "
+                    "fix the items with the caller, and call quote_order again."
+                )
+            return (
+                "The order could NOT be saved. Do NOT tell the caller it was placed. Apologize and take "
+                "their name and number so the restaurant can call them back to confirm the order."
+            )
+
+        # Confirmed success only past this point (unlike save_reservation's flag-first pattern).
+        self._order_saved = True
+        if customer_name:
+            self._caller_name = customer_name
+        if not self._lead_reason or self._lead_reason == "inbound call":
+            self._lead_reason = "pickup order"
+
+        data = resp.json()
+        total_text = data.get("total_text") or f"${data.get('total', 0):.2f}"
+        ready_text = data.get("ready_text") or "shortly"
+        return (
+            f"Order saved. Total {total_text}, ready around {ready_text}. Now speak a brief, warm "
+            "confirmation OUT LOUD: the total, that it'll be ready around that time, and that they pay "
+            "at pickup. Then ask 'Is there anything else I can help you with?' and STAY on the line — "
+            "do NOT end the call."
+        )
+
+    @function_tool
     async def capture_lead(self, context: RunContext, name: str = "", reason: str = "") -> str:
         """Silently record who is calling and why, for the restaurant's records. Call this once, early,
         as soon as you naturally know the caller's name and/or why they're calling (a booking, a question,
@@ -408,9 +602,16 @@ async def entrypoint(ctx: JobContext) -> None:
     call_start = time.monotonic()
 
     # When the call ends: record the call (so it's counted + has a transcript)
-    # AND log a lead (converted=True if a booking was made this call).
+    # AND log a lead (converted=True if a booking or order was made this call).
     async def _on_call_end() -> None:
-        outcome = "booked" if agent._reservation_saved else "other"
+        # "booked" and "ordered" are both SUCCESS_OUTCOMES on the API side; a
+        # call with both keeps "booked" (one value per call, either suppresses
+        # the missed-call text).
+        outcome = (
+            "booked" if agent._reservation_saved
+            else "ordered" if agent._order_saved
+            else "other"
+        )
         duration = int(time.monotonic() - call_start)
         # Best-effort transcript from the conversation history.
         transcript = ""
@@ -454,7 +655,7 @@ async def entrypoint(ctx: JobContext) -> None:
                         "name": agent._caller_name,
                         "phone": caller_phone,
                         "reason": agent._lead_reason or "inbound call",
-                        "converted": agent._reservation_saved,
+                        "converted": agent._reservation_saved or agent._order_saved,
                     },
                     timeout=10.0,
                 )
