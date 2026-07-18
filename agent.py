@@ -43,21 +43,33 @@ DEFAULT_VOICE_ID = "XrExE9yKIg1WjnnlVkGX"
 class OrderItem(BaseModel):
     """One line of a pickup order, exactly as the caller said it. The backend
     matches the name against the real menu and prices it — the agent never
-    supplies a price or a total."""
+    supplies a price or a total.
+
+    quantity/notes are Optional because GPT sends explicit nulls for fields it
+    has no value for — a plain `str`/`int` makes pydantic reject the whole tool
+    call (live failure, Hassan's July 17 test call)."""
 
     name: str = Field(description="The dish as the caller said it, e.g. 'margherita pizza'")
-    quantity: int = Field(default=1, description="How many of this item")
-    notes: str = Field(default="", description="Modifications/allergies word-for-word, e.g. 'no onions, peanut allergy'")
+    quantity: int | None = Field(default=1, description="How many of this item (default 1)")
+    notes: str | None = Field(default=None, description="Modifications/allergies word-for-word, e.g. 'no onions, peanut allergy'")
 
 
 def _order_items_payload(items) -> list:
-    """OrderItem models (or dicts, defensively) -> plain dicts for the API."""
+    """OrderItem models (or dicts, defensively) -> plain dicts for the API,
+    with nulls normalized so the backend always sees a clean shape."""
     out = []
     for i in items or []:
         if hasattr(i, "model_dump"):
-            out.append(i.model_dump())
+            d = i.model_dump()
         elif isinstance(i, dict):
-            out.append(i)
+            d = dict(i)
+        else:
+            continue
+        if d.get("quantity") is None:
+            d["quantity"] = 1
+        if d.get("notes") is None:
+            d["notes"] = ""
+        out.append(d)
     return out
 
 
