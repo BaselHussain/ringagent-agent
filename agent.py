@@ -187,6 +187,15 @@ ORDER FLOW:
         if data.get("available"):
             return "That time is open. Continue to special requests."
 
+        # The date itself is wrong, not the slot — offering alternative TIMES
+        # would be nonsense. Callers misspeak the year fairly often.
+        if data.get("reason") == "past_date":
+            return (
+                f"NOT AVAILABLE — {data.get('message', 'that date has already passed.')} "
+                "Ask the caller warmly to confirm the date they meant (check the year), then call "
+                "check_availability again with the corrected date. Do not book this date."
+            )
+
         alts = data.get("alternatives") or []
         if alts:
             return (
@@ -226,14 +235,17 @@ ORDER FLOW:
             return "Reservation already saved."
 
         logger.info("Saving reservation: %s, %s, %s, %s", customer_name, party_size, date, time)
-        self._reservation_saved = True
         self._caller_name = customer_name
         if not self._lead_reason:
             self._lead_reason = "reservation"
 
+        # Check the response before claiming success. This used to set
+        # _reservation_saved and return "saved successfully" BEFORE the request,
+        # swallowing every failure -- so a refused booking (e.g. a date in the
+        # past) was still confirmed out loud to the caller.
         try:
             async with httpx.AsyncClient() as client:
-                await client.post(
+                resp = await client.post(
                     f"{RINGAGENT_API_URL}/agent/save-reservation",
                     json={
                         "restaurant_id": self.restaurant.get("id"),
@@ -248,6 +260,31 @@ ORDER FLOW:
                 )
         except Exception as e:
             logger.error("Failed to save reservation: %s", e)
+            return (
+                "The booking did not go through because of a connection problem. Tell the caller "
+                "you're having trouble saving it right now, apologise, and offer to take their "
+                "number so the team can call back to confirm. Do NOT say it is booked."
+            )
+
+        if resp.status_code >= 400:
+            body = {}
+            try:
+                body = resp.json()
+            except Exception:
+                pass
+            logger.error("save-reservation rejected (%s): %s", resp.status_code, body)
+            if body.get("error") == "past_date":
+                return (
+                    f"NOT SAVED — {body.get('message', 'that date is in the past.')} "
+                    "Do NOT tell the caller it is booked. Ask them warmly for the correct date, "
+                    "then call check_availability again with it before saving."
+                )
+            return (
+                "The booking was not saved. Do NOT tell the caller it is confirmed. Apologise, ask "
+                "them to repeat the details, and try once more."
+            )
+
+        self._reservation_saved = True
         return (
             "Reservation saved successfully. Now speak a brief, warm confirmation OUT LOUD to the caller: "
             "restate their name, party size, date and time (and the note if there is one), then ask "
