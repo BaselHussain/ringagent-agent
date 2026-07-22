@@ -35,6 +35,11 @@ logger = logging.getLogger("ring-agent")
 logging.basicConfig(level=logging.DEBUG)
 
 RINGAGENT_API_URL = os.environ.get("RINGAGENT_API_URL", "")
+# Proves to the backend that a /agent/* request really came from us. Sent on
+# every call below. Empty locally -> no header -> the API stays open, so a dev
+# machine can still point at an unsecured backend.
+RINGAGENT_API_SECRET = os.environ.get("RINGAGENT_API_SECRET", "")
+API_HEADERS = {"X-Ringagent-Secret": RINGAGENT_API_SECRET} if RINGAGENT_API_SECRET else {}
 DEMO_RESTAURANT_ID = os.environ.get("DEMO_RESTAURANT_ID", "86982824-7063-4235-ad95-329e2877f483")
 # Platform default voice — used when a restaurant hasn't picked its own voice.
 DEFAULT_VOICE_ID = "XrExE9yKIg1WjnnlVkGX"
@@ -174,6 +179,7 @@ ORDER FLOW:
                         "date": date,
                         "time": time,
                     },
+                    headers=API_HEADERS,
                     timeout=10.0,
                 )
             data = resp.json()
@@ -256,6 +262,7 @@ ORDER FLOW:
                         "time": time,
                         "notes": notes,
                     },
+                    headers=API_HEADERS,
                     timeout=10.0,
                 )
         except Exception as e:
@@ -309,12 +316,14 @@ ORDER FLOW:
                     r = await client.get(
                         f"{RINGAGENT_API_URL}/agent/reservations-by-name",
                         params={"restaurant_id": self.restaurant.get("id", ""), "name": name, "date": date},
+                        headers=API_HEADERS,
                         timeout=10.0,
                     )
                 else:
                     r = await client.get(
                         f"{RINGAGENT_API_URL}/agent/reservations-by-phone/{self.caller_phone}",
                         params={"restaurant_id": self.restaurant.get("id", "")},
+                        headers=API_HEADERS,
                         timeout=10.0,
                     )
                 rows = r.json() if r.status_code == 200 else []
@@ -367,6 +376,7 @@ ORDER FLOW:
                 await client.post(
                     f"{RINGAGENT_API_URL}/agent/modify-reservation",
                     json={"reservation_id": reservation_id, "party_size": party_size, "date": date, "time": time},
+                    headers=API_HEADERS,
                     timeout=10.0,
                 )
         except Exception as e:
@@ -387,6 +397,7 @@ ORDER FLOW:
                 await client.post(
                     f"{RINGAGENT_API_URL}/agent/cancel-reservation",
                     json={"reservation_id": reservation_id},
+                    headers=API_HEADERS,
                     timeout=10.0,
                 )
         except Exception as e:
@@ -421,6 +432,7 @@ ORDER FLOW:
                         "items": _order_items_payload(items),
                         "requested_time": requested_time,
                     },
+                    headers=API_HEADERS,
                     timeout=10.0,
                 )
             if resp.status_code != 200:
@@ -514,6 +526,7 @@ ORDER FLOW:
                         "requested_time": requested_time,
                         "notes": notes,
                     },
+                    headers=API_HEADERS,
                     timeout=10.0,
                 )
         except Exception as e:
@@ -584,6 +597,7 @@ async def _fetch_restaurant(called_number: str | None) -> dict:
             try:
                 r = await client.get(
                     f"{RINGAGENT_API_URL}/agent/restaurant-by-phone/{called_number}",
+                    headers=API_HEADERS,
                     timeout=5.0,
                 )
                 if r.status_code == 200:
@@ -593,6 +607,7 @@ async def _fetch_restaurant(called_number: str | None) -> dict:
         # Fallback to demo restaurant
         r = await client.get(
             f"{RINGAGENT_API_URL}/agent/restaurant/{DEMO_RESTAURANT_ID}",
+            headers=API_HEADERS,
             timeout=5.0,
         )
         return r.json()
@@ -692,6 +707,7 @@ async def entrypoint(ctx: JobContext) -> None:
                         "transcript": transcript,
                         "outcome": outcome,
                     },
+                    headers=API_HEADERS,
                     timeout=10.0,
                 )
             except Exception as e:
@@ -706,6 +722,7 @@ async def entrypoint(ctx: JobContext) -> None:
                         "reason": agent._lead_reason or "inbound call",
                         "converted": agent._reservation_saved or agent._order_saved,
                     },
+                    headers=API_HEADERS,
                     timeout=10.0,
                 )
             except Exception as e:
