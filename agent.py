@@ -195,7 +195,7 @@ ORDER FLOW:
 
         # The date itself is wrong, not the slot — offering alternative TIMES
         # would be nonsense. Callers misspeak the year fairly often.
-        if data.get("reason") == "past_date":
+        if data.get("reason") in ("past_date", "far_future"):
             return (
                 f"NOT AVAILABLE — {data.get('message', 'that date has already passed.')} "
                 "Ask the caller warmly to confirm the date they meant (check the year), then call "
@@ -280,7 +280,7 @@ ORDER FLOW:
             except Exception:
                 pass
             logger.error("save-reservation rejected (%s): %s", resp.status_code, body)
-            if body.get("error") == "past_date":
+            if body.get("error") in ("past_date", "far_future"):
                 return (
                     f"NOT SAVED — {body.get('message', 'that date is in the past.')} "
                     "Do NOT tell the caller it is booked. Ask them warmly for the correct date, "
