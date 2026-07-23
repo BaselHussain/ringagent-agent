@@ -84,14 +84,19 @@ def _order_items_payload(items) -> list:
 # ---------------------------------------------------------------------------
 
 class SarahAgent(Agent):
-    def __init__(self, restaurant: dict, caller_phone: str) -> None:
+    def __init__(self, restaurant: dict, caller_phone: str, job_ctx=None, called_number: str | None = None) -> None:
         self.restaurant = restaurant
         self.caller_phone = caller_phone
+        # job_ctx is what lets us hand the call to a real person (SIP REFER).
+        # Optional so the class still constructs without a LiveKit job.
+        self.job_ctx = job_ctx
+        self.called_number = called_number
         restaurant_name = restaurant.get("name", "the restaurant")
         self._restaurant_name = restaurant_name
         self._agent_name = restaurant.get("agent_name") or "Sarah"
         self._reservation_saved = False
         self._order_saved = False
+        self._escalated = False
         self._caller_name = ""
         self._lead_reason = ""
         super().__init__(
@@ -570,6 +575,147 @@ ORDER FLOW:
             "do NOT end the call."
         )
 
+    def _find_sip_participant(self):
+        """The caller's SIP participant, looked up at transfer time rather than
+        cached at startup — the room is still filling when the job begins."""
+        room = getattr(self.job_ctx, "room", None)
+        for p in (getattr(room, "remote_participants", None) or {}).values():
+            if (p.attributes or {}).get("sip.phoneNumber"):
+                return p
+        return None
+
+    @function_tool
+    async def transfer_to_human(self, context: RunContext, reason: str = "") -> str:
+        """Put the caller through to a real person at the restaurant. Call this when the caller asks
+        for a person/manager/owner, when they're unhappy about a past visit or a bill, when they want
+        a large private event, or when you've misunderstood the same request twice.
+        Say NOTHING about transferring before calling this — it decides whether a transfer is possible.
+        Follow the instruction it returns exactly.
+
+        Args:
+            reason: Short reason for the handover e.g. 'wants to book a private event', 'complaint about last visit'
+        """
+        # What to do when we cannot connect them. Defined once so every failure
+        # path gives the model the same next step instead of improvising.
+        take_message_instead = (
+            "NOT TRANSFERRED — do NOT tell the caller you are connecting them. Apologise warmly, "
+            "say you'll have someone call them straight back, then ask for their name, the best "
+            "number to reach them on, and what it's about, and call take_message with it."
+        )
+
+        self._lead_reason = reason or "asked to speak with someone"
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{RINGAGENT_API_URL}/agent/request-transfer",
+                    json={
+                        "restaurant_id": self.restaurant.get("id"),
+                        "called_number": self.called_number,
+                        "reason": reason,
+                    },
+                    headers=API_HEADERS,
+                    timeout=10.0,
+                )
+            data = resp.json() if resp.status_code == 200 else {}
+        except Exception as e:
+            logger.error("request-transfer failed: %s", e)
+            return take_message_instead
+
+        if not data.get("transfer"):
+            logger.info("Transfer refused by API: %s", data.get("reason"))
+            return data.get("message") or take_message_instead
+
+        participant = self._find_sip_participant()
+        if participant is None or self.job_ctx is None:
+            logger.error("Transfer allowed but no SIP participant found — falling back to a message")
+            return take_message_instead
+
+        # Speak BEFORE the REFER and wait for the audio to finish playing: once
+        # the transfer lands, our audio path is gone and anything said after it
+        # is silence to the caller.
+        try:
+            await self.session.say(data.get("say") or "Let me put you through to someone now.")
+        except Exception as e:
+            logger.error("Pre-transfer line failed to play: %s", e)
+
+        try:
+            from livekit import api as lk_api
+            from google.protobuf.duration_pb2 import Duration
+
+            # Called directly rather than via ctx.transfer_sip_participant()
+            # because that helper cannot set ringing_timeout — and a blind
+            # transfer that rings forever is exactly the failure we promised to
+            # avoid. On timeout the caller stays with us and we take a message.
+            await self.job_ctx.api.sip.transfer_sip_participant(
+                lk_api.TransferSIPParticipantRequest(
+                    room_name=self.job_ctx.room.name,
+                    participant_identity=participant.identity,
+                    transfer_to=f"tel:{data.get('to')}",
+                    play_dialtone=True,
+                    ringing_timeout=Duration(seconds=25),
+                )
+            )
+        except Exception as e:
+            logger.error("SIP transfer failed: %s", e)
+            return (
+                "The transfer did not go through — the caller is still on the line with you. "
+                + take_message_instead
+            )
+
+        self._escalated = True
+        return "Transferred. The caller is being connected to a person now. Say nothing further."
+
+    @function_tool
+    async def take_message(
+        self,
+        context: RunContext,
+        name: str = "",
+        phone: str = "",
+        message: str = "",
+    ) -> str:
+        """Take a call-back message when the caller wanted a person and you could not put them through.
+        Call this ONLY after transfer_to_human told you to take a message, and only once you have
+        their name, a number, and what it's about. Say nothing while it runs.
+
+        Args:
+            name: The caller's name
+            phone: The best number to call them back on (read it back to them first to confirm)
+            message: What they want, in their own words
+        """
+        if name:
+            self._caller_name = name
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    f"{RINGAGENT_API_URL}/agent/escalation",
+                    json={
+                        "restaurant_id": self.restaurant.get("id"),
+                        "caller_phone": self.caller_phone,
+                        "callback_phone": phone,
+                        "customer_name": name,
+                        "message": message,
+                        "reason": self._lead_reason,
+                    },
+                    headers=API_HEADERS,
+                    timeout=10.0,
+                )
+            if resp.status_code != 200:
+                raise RuntimeError(f"HTTP {resp.status_code}")
+        except Exception as e:
+            logger.error("take_message failed: %s", e)
+            return (
+                "The message could NOT be saved. Do not claim it was passed on. Apologise, give the "
+                "caller the restaurant's own phone number from the RESTAURANT INFORMATION above, and "
+                "suggest they try again shortly."
+            )
+
+        return (
+            "Message saved and the restaurant has been notified. Now reassure the caller OUT LOUD, "
+            "warmly and briefly, that someone will call them back shortly on the number they gave, "
+            "then ask if there's anything else you can help with in the meantime."
+        )
+
     @function_tool
     async def capture_lead(self, context: RunContext, name: str = "", reason: str = "") -> str:
         """Silently record who is calling and why, for the restaurant's records. Call this once, early,
@@ -663,7 +809,7 @@ async def entrypoint(ctx: JobContext) -> None:
         user_away_timeout=10.0,
     )
 
-    agent = SarahAgent(restaurant, caller_phone)
+    agent = SarahAgent(restaurant, caller_phone, job_ctx=ctx, called_number=called_number)
     call_start = time.monotonic()
 
     # When the call ends: record the call (so it's counted + has a transcript)
@@ -671,10 +817,14 @@ async def entrypoint(ctx: JobContext) -> None:
     async def _on_call_end() -> None:
         # "booked" and "ordered" are both SUCCESS_OUTCOMES on the API side; a
         # call with both keeps "booked" (one value per call, either suppresses
-        # the missed-call text).
+        # the missed-call text). "escalated" ranks last of the three: a caller
+        # who booked AND then asked a question is still a booking. It is not a
+        # success outcome, but it does suppress the missed-call text — see
+        # lib/outcomes.js NO_RECOVERY_SMS_OUTCOMES.
         outcome = (
             "booked" if agent._reservation_saved
             else "ordered" if agent._order_saved
+            else "escalated" if agent._escalated
             else "other"
         )
         duration = int(time.monotonic() - call_start)
