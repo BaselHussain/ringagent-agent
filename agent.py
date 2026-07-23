@@ -198,8 +198,8 @@ ORDER FLOW:
         if data.get("reason") in ("past_date", "far_future"):
             return (
                 f"NOT AVAILABLE — {data.get('message', 'that date has already passed.')} "
-                "Ask the caller warmly to confirm the date they meant (check the year), then call "
-                "check_availability again with the corrected date. Do not book this date."
+                "Do NOT propose next year yourself. Warmly ask the caller what upcoming date "
+                "they'd like, then call check_availability again with it. Do not book this date."
             )
 
         alts = data.get("alternatives") or []
@@ -283,8 +283,9 @@ ORDER FLOW:
             if body.get("error") in ("past_date", "far_future"):
                 return (
                     f"NOT SAVED — {body.get('message', 'that date is in the past.')} "
-                    "Do NOT tell the caller it is booked. Ask them warmly for the correct date, "
-                    "then call check_availability again with it before saving."
+                    "Do NOT tell the caller it is booked, and do NOT propose next year yourself. "
+                    "Warmly ask them for an upcoming date, then call check_availability again with it "
+                    "before saving."
                 )
             return (
                 "The booking was not saved. Do NOT tell the caller it is confirmed. Apologise, ask "
