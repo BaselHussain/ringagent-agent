@@ -70,7 +70,14 @@ class TestStaysInCharacter:
         assert "operator" in LOWER
 
     def test_offers_natural_phrasing(self):
-        assert "put you through" in LOWER
+        assert "get one of the team" in LOWER or "get someone for you" in LOWER
+
+    def test_forbids_upgrading_the_line_into_a_firm_promise(self):
+        # The line is spoken before the connection is certain. A live test on
+        # July 24 hit a rejected REFER right after a firm promise and the agent
+        # had to walk it back, which sounded broken.
+        assert "do not upgrade it into a firm promise" in LOWER
+        assert "use its words" in LOWER
 
     def test_does_not_break_the_never_mention_ai_rule(self):
         # The persona rule elsewhere in the prompt must still stand.
